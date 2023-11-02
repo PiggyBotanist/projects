@@ -1,0 +1,228 @@
+---
+title: "Phylogenetic Tree of Crocidura Using CytB Genes"
+author: "PiggyBontanist"
+date: "2023-10-22"
+output: pdf_document
+---
+
+```{r setup}
+# Load packages
+library(rentrez)
+library(Biostrings)
+library(msa)
+library(vegan)
+library(ggplot2)
+library(phytools)
+library(ape)
+library(stringr)
+library(dplyr)
+```
+
+# Section 1: Data retrieval and filtering
+
+## Step 1: Obtaining data:
+To start off, we should download the sequences from NCBI using "rentrez"package. Due to the large dataset we have, search_history was used to store these information, and the sequences can then be retrieved using the history:
+
+```{r}
+# Perform a search to get the web history
+search_history <- entrez_search(db = "nuccore", term = "Crocidura AND cytb 400:2000[SLEN]", retmax = 4582, use_history = TRUE)
+
+# Retrieve the sequences using the search history
+sequences <- entrez_fetch(db = "nuccore", web_history = search_history$web_history, rettype = "fasta")
+```
+
+While it didn't take a long time to download these sequences, it is still a good idea to save them just in case we need to use it:
+
+```{r}
+# Create a temporary file and write the sequences to it
+temp_fasta_file <- tempfile(fileext = ".fasta")
+write(sequences, file = temp_fasta_file)
+
+# Convert the sequences in the temporary file to a DNAStringSet
+crocidura_sequences <- readDNAStringSet(temp_fasta_file)
+```
+
+For personal preference, the sequences were converted into a data frame for easier visualization and analysis:
+```{r}
+# Create an empty dataframe with column initialized
+crocidura.df <- data.frame(
+  sequenceID = character(0),
+  ID = character(0),
+  genus = character(0),
+  species = character(0),
+  seq_length = integer(0),
+  sequence = DNAStringSet(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through the DNA sequences and add them to the dataframe
+for (i in 1:length(crocidura_sequences)) {
+  sequenceID <- as.character(names(crocidura_sequences)[i])
+  split_name <- strsplit(sequenceID, " ")
+  ID <- split_name[[1]][1]
+  genus <- split_name[[1]][2]
+  species <- split_name[[1]][3]
+  sequence <- crocidura_sequences[i]
+
+  # Add a new row to the dataframe
+  crocidura.df <- rbind(crocidura.df, data.frame(sequenceID = sequenceID, ID = ID, genus = genus, species = species, sequence = sequence, stringsAsFactors = FALSE))
+  rownames(crocidura.df)[i] <- i
+}
+rm(i, sequenceID, split_name, ID, genus, species, sequence)
+
+```
+
+
+## Step 2: explore and filtering data
+
+Since we are only interested in "Crocidura"genus, all non Crocidura entries were removed:
+```{r}
+# Filter unwanted genus
+crocidura.df2 <- crocidura.df[crocidura.df$genus == "Crocidura",]
+
+# Create a count table for each species
+species_distribution <- data.frame(table(crocidura.df2$species))
+colnames(species_distribution) <- c("species", "count")
+
+```
+
+Because we are working with sequence classification, aligning these sequence would be essential. Our dataset has around 4,000+ sequence, which would take a long time to perform multiple sequence alignment. Therefore, 10 sequences was selected per unique species (there are 78 species in total, so 780 sequences was aligned).
+
+```{r}
+#Option 1: 
+# Filter all species with count less than 10
+#crocidura.df3 <- crocidura.df2 %>% left_join(species_distribution, by = "species") %>% filter(all(is.na(count)) | count >= 10) %>% select(-count)
+
+# Only select 1 sequence per species to align to
+#crocidura.df3$seq_length <- nchar(crocidura.df3$sequence)
+#crocidura.df4 <- crocidura.df3 %>% group_by(species) %>% filter(seq_length == max(seq_length)) %>% sample_n(1) %>% ungroup()
+
+# Aligne sequences (n = 780)
+#crocidura.df4$aligned_seq <- as.character(msa(crocidura.df4$sequence, type = "DNA"))
+write.csv(crocidura.df4, file = "crocidura_dataframe.csv")
+
+## Option 2:
+crocidura.df4 <- read.csv(file = "crocidura_dataframe.csv")
+```
+
+
+
+```{r}
+# Graph sequence distribution
+plot1 <- ggplot(crocidura.df4, aes(x = seq_length)) +
+  geom_histogram(binwidth = 20, fill = "grey", color = "black") +  # Change fill and border color
+  labs(x = "Sequence Length", y = "Frequency") +
+  ggtitle(expression(italic("Distribution of")~italic(" cytb")~italic("Sequence Length from Dataset")))  # Make "cytb" italic
+plot1
+```
+
+
+
+```{r}
+# Need to include how dataset for Area and Adult Body Mass was obtained
+```
+
+Next we should filter and organize our datset:
+```{r}
+# Load the dataset
+phenotypic_dataset <- read.delim("esapubs.org_archive_ecol_E090_184_PanTHERIA_1-0_WR93_Aug2008 copy.txt", header = TRUE, sep = "\t")
+
+# Only keep columns we want
+phenotypic_dataset <- phenotypic_dataset[c("MSW93_Genus", "MSW93_Species", "X26.1_GR_Area_km2", "X5.1_AdultBodyMass_g")]
+
+# Only keep rows where genus is "crocidura"
+phenotypic_dataset <- phenotypic_dataset[phenotypic_dataset$MSW93_Genus == "Crocidura",]
+
+# Rename columns
+colnames(phenotypic_dataset) <- c("genus", "species", "area", "body_mass") 
+```
+
+
+Now we group the sequences with these traits:
+```{r}
+# Out of 151 specis, only 41 has cytb sequence data
+crocidura.df5 <- left_join(phenotypic_dataset, crocidura.df4, by = "species")
+crocidura.df5 <- crocidura.df5[!is.na(crocidura.df5$sequenceID), ]
+
+# Some species also does not have body mass (-999). Thus we have to remove these entries (41 to 21):
+crocidura.df6 <- crocidura.df5[crocidura.df5$body_mass != -999, ]
+```
+
+# Section 2: Analysis of dataset
+
+First we would like to plot a phylogentic tree on all species with highest quality of sequence:
+
+```{r}
+# Compute distance matrix based on aligned sequences
+distance_matrix <- dist.dna(x = as.DNAbin(DNAStringSet(crocidura.df4$aligned_seq)), model = "raw", as.matrix = TRUE, pairwise.deletion = TRUE)
+
+# Rename each row (better for labeling)
+rownames(distance_matrix) <- paste("Crocidura", crocidura.df4$species)
+
+# Create a tree from distance matrix
+phyloTree <- njs(distance_matrix)
+
+# Save the tree as .tree file
+write.tree(phyloTree, file = "Crocidura.tre")
+```
+
+
+```{r}
+# Create phylogenetic plot based on phylogenetic tree
+phyloPlot <- ggtree(phyloTree) + 
+  #geom_tiplab(size = 20) +  
+  scale_color_gradientn(colours=c("red", 'orange', 'green', 'cyan', 'blue')) 
+
+# Draw plot
+phyloPlot
+```
+
+To perform phylogenetically independent contrasts (PICs) analysis, we must first ensure it is rooted and dichotomous (only branch to 2 per node) by converting the tree into a binary tree:
+```{r}
+# Note we are doing this again because we are using the dataset bound with phenotypes this time (n = 21 instead of 78)
+
+# Compute distance matrix based on aligned sequences
+distance_matrix <- dist.dna(x = as.DNAbin(DNAStringSet(crocidura.df6$aligned_seq)), model = "raw", as.matrix = TRUE, pairwise.deletion = TRUE)
+
+# Rename each row (better for labeling)
+rownames(distance_matrix) <- paste("Crocidura", crocidura.df6$species)
+
+binaryTree <- multi2di(njs(distance_matrix))
+
+pic.area <-pic(crocidura.df6$area, binaryTree)
+pic.mass <-pic(crocidura.df6$body_mass, binaryTree)
+fit.pic<-lm(pic.area~pic.mass)
+```
+
+```{r}
+plot(pic.area,pic.mass,xlab="PICs for Conservation Area(Km^2)",
+    ylab="PICs for Adult Body Mass (g)",bg="grey",
+    cex=1.4,pch=21)
+abline(fit.pic,lwd=2,lty="dashed",col="red")
+```
+
+
+
+```{r}
+
+# Compute distance matrix based on aligned sequences
+test <- dist.dna(x = as.DNAbin(DNAStringSet(crocidura.df4$aligned_seq)), model = "raw", as.matrix = TRUE, pairwise.deletion = TRUE)
+
+# Rename each row (better for labeling)
+rownames(test) <- paste("Crocidura", crocidura.df4$species)
+
+# Create a tree from distance matrix
+test.1 <- njs(test)
+
+# Create phylogenetic plot based on phylogenetic tree
+test.2 <- ggtree(test.1) +
+  geom_tree() +
+  geom_tiplab(size = 3)
+
+# Draw plot
+test.2
+  
+```
+
+
+
