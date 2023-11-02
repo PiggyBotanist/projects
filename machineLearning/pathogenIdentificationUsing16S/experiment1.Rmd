@@ -1,6 +1,6 @@
 ---
-title: "Bioinformatics Tools (BINF6410) - Assignment2"
-author: "Kai Hsiang (Jeremy) Chang"
+title: "Predicting Salmonella, Listeria, Clostridium, and Eschrichia Genus and Species using Ribosomal 16S and 16-23S Intergenic Spacer Gene with Random Forest and Convolutional Neural Network (CNN)" 
+author: "PiggyBotanist"
 date: "2023-10-18"
 output: pdf_document
 ---
